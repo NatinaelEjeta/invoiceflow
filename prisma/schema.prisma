@@ -1,0 +1,169 @@
+// InvoiceFlow — Prisma schema
+//
+// PORTABILITY: This schema intentionally avoids any database-specific
+// features (no native enums, no JSON columns, no `@db.` native type
+// attributes, no case-insensitive `mode: "insensitive"` filters). It works
+// unchanged on SQLite (local development) and PostgreSQL (Neon production).
+//
+//   - Roles / statuses / plans are plain String columns validated in Zod.
+//   - Money is always stored as INTEGER CENTS.
+//   - Dates are stored as UTC DateTime.
+//
+// For PostgreSQL, use `prisma/schema.postgres.prisma` (identical except the
+// provider line) or change the provider below to "postgresql".
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Workspace + users
+// ---------------------------------------------------------------------------
+
+/// A workspace (tenant). All business data is scoped by accountId, and the
+/// server enforces this scoping on every query so workspaces are isolated.
+model Account {
+  id                   String   @id @default(cuid())
+  name                 String
+  /// "FREE" | "PRO" (validated server-side; String keeps SQLite/Postgres parity)
+  plan                 String   @default("FREE")
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  /// Stripe subscription status: "active" | "trialing" | "canceled" | ...
+  subscriptionStatus   String?
+  /// Short text rendered as the workspace logo in the UI and on PDFs
+  logoText             String   @default("")
+  /// ISO currency code, e.g. "USD"
+  defaultCurrency      String   @default("USD")
+  /// Default invoice tax rate in percent (0 - 100)
+  defaultTaxRate       Float    @default(0)
+  footerNote           String   @default("")
+  /// Monotonic counter used for per-workspace sequential invoice numbers
+  nextInvoiceNumber    Int      @default(1)
+  createdAt            DateTime @default(now())
+
+  users    User[]
+  clients  Client[]
+  invoices Invoice[]
+
+  @@index([plan])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  /// "OWNER" | "MEMBER"
+  role         String
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@index([accountId])
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+
+model Client {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name      String
+  email     String?
+  company   String?
+  address   String?
+  taxNumber String?
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  invoices Invoice[]
+
+  @@index([accountId, archived])
+}
+
+// ---------------------------------------------------------------------------
+// Invoices
+// ---------------------------------------------------------------------------
+
+model Invoice {
+  id            String    @id @default(cuid())
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  /// Per-workspace sequential human-readable number, e.g. "INV-0001".
+  /// Unique per workspace via @@unique([accountId, number]); the number is
+  /// allocated inside the same transaction that creates the invoice, so it
+  /// never repeats even under concurrent requests.
+  number        String
+  /// "DRAFT" | "SENT" | "PAID" | "OVERDUE" | "VOID"
+  status        String    @default("DRAFT")
+  issueDate     DateTime
+  dueDate       DateTime
+  /// ISO currency code for this invoice, e.g. "USD"
+  currency      String
+  /// Tax rate in percent applied to (subtotal - discount)
+  taxRate       Float     @default(0)
+  /// "NONE" | "PERCENT" | "FIXED" (FIXED value is in major currency units)
+  discountType  String    @default("NONE")
+  /// PERCENT: 0-100. FIXED: amount in major units (e.g. 25.5 = 25.50)
+  discountValue Float     @default(0)
+  subtotalCents Int
+  taxCents      Int       @default(0)
+  discountCents Int       @default(0)
+  totalCents    Int
+  paidCents     Int       @default(0)
+  notes         String?
+  /// Random token for the public read-only share link /i/[token]
+  publicToken   String    @unique
+  sentAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@unique([accountId, number])
+  @@index([accountId, status])
+  @@index([accountId, issueDate])
+  @@index([accountId, clientId])
+}
+
+model InvoiceItem {
+  id            String  @id @default(cuid())
+  invoiceId     String
+  invoice       Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description   String
+  /// Quantity can be fractional (e.g. 2.5 hours)
+  quantity      Float
+  /// Unit price in integer cents
+  unitPriceCents Int
+  position      Int     @default(0)
+
+  @@index([invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// Payments
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amountCents Int
+  paidAt      DateTime
+  /// "CARD" | "BANK_TRANSFER" | "CASH" | "OTHER"
+  method      String
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([invoiceId])
+}

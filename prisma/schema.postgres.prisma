@@ -1,0 +1,127 @@
+// InvoiceFlow — Prisma schema for PostgreSQL (Neon, Vercel production).
+//
+// This file is IDENTICAL to `schema.prisma` except for the datasource
+// provider. The schema uses no database-specific features, so both files
+// stay in sync. To deploy against Postgres run:
+//
+//   npx prisma db push --schema prisma/schema.postgres.prisma
+//
+// (or copy this file over `schema.prisma`).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id                   String   @id @default(cuid())
+  name                 String
+  plan                 String   @default("FREE")
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  subscriptionStatus   String?
+  logoText             String   @default("")
+  defaultCurrency      String   @default("USD")
+  defaultTaxRate       Float    @default(0)
+  footerNote           String   @default("")
+  nextInvoiceNumber    Int      @default(1)
+  createdAt            DateTime @default(now())
+
+  users    User[]
+  clients  Client[]
+  invoices Invoice[]
+
+  @@index([plan])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@index([accountId])
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name      String
+  email     String?
+  company   String?
+  address   String?
+  taxNumber String?
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  invoices Invoice[]
+
+  @@index([accountId, archived])
+}
+
+model Invoice {
+  id            String    @id @default(cuid())
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  number        String
+  status        String    @default("DRAFT")
+  issueDate     DateTime
+  dueDate       DateTime
+  currency      String
+  taxRate       Float     @default(0)
+  discountType  String    @default("NONE")
+  discountValue Float     @default(0)
+  subtotalCents Int
+  taxCents      Int       @default(0)
+  discountCents Int       @default(0)
+  totalCents    Int
+  paidCents     Int       @default(0)
+  notes         String?
+  publicToken   String    @unique
+  sentAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@unique([accountId, number])
+  @@index([accountId, status])
+  @@index([accountId, issueDate])
+  @@index([accountId, clientId])
+}
+
+model InvoiceItem {
+  id             String  @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description    String
+  quantity       Float
+  unitPriceCents Int
+  position       Int     @default(0)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amountCents Int
+  paidAt      DateTime
+  method      String
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([invoiceId])
+}
